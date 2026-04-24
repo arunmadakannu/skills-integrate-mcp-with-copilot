@@ -8,6 +8,8 @@ for extracurricular activities at Mergington High School.
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
+from datetime import datetime
+from typing import List
 import os
 from pathlib import Path
 
@@ -77,6 +79,10 @@ activities = {
     }
 }
 
+# In-memory messaging database
+# Structure: {activity_name: {user_email: [{"from": email, "to": email, "message": text, "timestamp": time, "activity": name}]}}
+messages = {}
+
 
 @app.get("/")
 def root():
@@ -130,3 +136,103 @@ def unregister_from_activity(activity_name: str, email: str):
     # Remove student
     activity["participants"].remove(email)
     return {"message": f"Unregistered {email} from {activity_name}"}
+
+
+@app.post("/messages/send")
+def send_message(sender: str, recipient: str, activity_name: str, message_text: str):
+    """Send a message to another user about an activity"""
+    # Validate activity exists
+    if activity_name not in activities:
+        raise HTTPException(status_code=404, detail="Activity not found")
+
+    # Create message object
+    message = {
+        "from": sender,
+        "to": recipient,
+        "activity": activity_name,
+        "text": message_text,
+        "timestamp": datetime.now().isoformat()
+    }
+
+    # Initialize messages for this activity if needed
+    if activity_name not in messages:
+        messages[activity_name] = {}
+
+    # Create conversation key (sorted to ensure consistency)
+    conversation_key = tuple(sorted([sender, recipient]))
+    if str(conversation_key) not in messages[activity_name]:
+        messages[activity_name][str(conversation_key)] = []
+
+    # Add message
+    messages[activity_name][str(conversation_key)].append(message)
+    
+    return {"message": "Message sent successfully", "timestamp": message["timestamp"]}
+
+
+@app.get("/messages/{activity_name}")
+def get_activity_messages(activity_name: str, user_email: str):
+    """Get all messages for a user in a specific activity"""
+    # Validate activity exists
+    if activity_name not in activities:
+        raise HTTPException(status_code=404, detail="Activity not found")
+
+    # Validate user is in the activity
+    if user_email not in activities[activity_name]["participants"]:
+        raise HTTPException(
+            status_code=403,
+            detail="User is not signed up for this activity"
+        )
+
+    # Get all messages for this user and activity
+    if activity_name not in messages:
+        return {"messages": [], "activity": activity_name, "user": user_email}
+
+    user_messages = []
+    for conversation_key, conv_messages in messages[activity_name].items():
+        for msg in conv_messages:
+            if msg["from"] == user_email or msg["to"] == user_email:
+                user_messages.append(msg)
+
+    # Sort by timestamp
+    user_messages.sort(key=lambda x: x["timestamp"])
+
+    return {
+        "messages": user_messages,
+        "activity": activity_name,
+        "user": user_email,
+        "total_messages": len(user_messages)
+    }
+
+
+@app.get("/messages/{activity_name}/{recipient}")
+def get_conversation(activity_name: str, user_email: str, recipient: str):
+    """Get all messages between two users in a specific activity"""
+    # Validate activity exists
+    if activity_name not in activities:
+        raise HTTPException(status_code=404, detail="Activity not found")
+
+    # Validate user is in the activity
+    if user_email not in activities[activity_name]["participants"]:
+        raise HTTPException(
+            status_code=403,
+            detail="User is not signed up for this activity"
+        )
+
+    if activity_name not in messages:
+        return {"messages": [], "activity": activity_name, "user": user_email, "recipient": recipient}
+
+    # Find conversation between these two users
+    conversation_key = str(tuple(sorted([user_email, recipient])))
+    
+    if conversation_key not in messages[activity_name]:
+        return {"messages": [], "activity": activity_name, "user": user_email, "recipient": recipient}
+
+    conversation_messages = messages[activity_name][conversation_key]
+
+    return {
+        "messages": conversation_messages,
+        "activity": activity_name,
+        "user": user_email,
+        "recipient": recipient,
+        "total_messages": len(conversation_messages)
+    }
