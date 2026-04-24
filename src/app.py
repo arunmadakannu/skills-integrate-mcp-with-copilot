@@ -5,16 +5,33 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from datetime import datetime
-from typing import List
+from typing import List, Dict
 import os
 from pathlib import Path
+import json
+import uuid
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
+
+# Session management for logged-in teachers
+sessions: Dict[str, str] = {}  # {session_id: username}
+
+# Load teacher credentials from JSON file
+def load_teachers():
+    teachers_path = os.path.join(Path(__file__).parent, "teachers.json")
+    try:
+        with open(teachers_path, 'r') as f:
+            data = json.load(f)
+            return {teacher["username"]: teacher["password"] for teacher in data.get("teachers", [])}
+    except:
+        return {}
+
+teachers = load_teachers()
 
 # Mount the static files directory
 current_dir = Path(__file__).parent
@@ -94,9 +111,41 @@ def get_activities():
     return activities
 
 
+@app.post("/auth/login")
+def login(username: str, password: str):
+    """Authenticate a teacher and create a session"""
+    if username not in teachers or teachers[username] != password:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    # Create a new session
+    session_id = str(uuid.uuid4())
+    sessions[session_id] = username
+    return {"session_id": session_id, "username": username}
+
+
+@app.post("/auth/logout")
+def logout(session_id: str):
+    """Log out a teacher and destroy their session"""
+    if session_id in sessions:
+        del sessions[session_id]
+    return {"message": "Logged out successfully"}
+
+
+@app.get("/auth/verify")
+def verify_session(session_id: str = Query(None)):
+    """Verify if a session is valid"""
+    if session_id and session_id in sessions:
+        return {"valid": True, "username": sessions[session_id]}
+    return {"valid": False}
+
+
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
-    """Sign up a student for an activity"""
+def signup_for_activity(activity_name: str, email: str, session_id: str = Query(None)):
+    """Sign up a student for an activity (requires teacher authorization)"""
+    # Check if user is authenticated as a teacher
+    if not session_id or session_id not in sessions:
+        raise HTTPException(status_code=403, detail="Teacher authentication required to register students")
+    
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -117,8 +166,12 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
-    """Unregister a student from an activity"""
+def unregister_from_activity(activity_name: str, email: str, session_id: str = Query(None)):
+    """Unregister a student from an activity (requires teacher authorization)"""
+    # Check if user is authenticated as a teacher
+    if not session_id or session_id not in sessions:
+        raise HTTPException(status_code=403, detail="Teacher authentication required to unregister students")
+    
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
